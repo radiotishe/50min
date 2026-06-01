@@ -392,6 +392,28 @@
     .desk-only{display:none !important;}
   }
   .sec-divider{font-family:var(--serif);font-size:17px;font-weight:600;color:var(--pine-deep);margin:8px 0 12px;padding-left:11px;border-left:5px solid var(--pine);}
+  .essence-card{background:var(--pine-deep);color:#F3EEE3;border-radius:var(--radius);padding:22px 24px;margin-bottom:18px;cursor:pointer;position:relative;transition:.15s;}
+  .essence-card:hover{filter:brightness(1.08);}
+  .essence-lab{font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);margin-bottom:8px;}
+  .essence-text{font-family:var(--serif);font-size:21px;font-weight:600;line-height:1.4;color:#F6F1E6;white-space:pre-wrap;}
+  .essence-edit-hint{display:block;margin-top:10px;font-size:11px;color:rgba(243,238,227,.5);}
+  .essence-card.empty{background:transparent;border:1.5px dashed var(--line);color:var(--ink-faint);font-size:14px;display:flex;align-items:center;gap:8px;font-weight:600;}
+  .essence-plus{font-size:18px;color:var(--pine);}
+  .essence-card.editing{cursor:default;}
+  .essence-input{width:100%;box-sizing:border-box;min-height:90px;border:none;border-radius:10px;padding:12px 14px;font-family:var(--serif);font-size:18px;line-height:1.4;background:rgba(255,255,255,.95);color:var(--ink);}
+  .draw-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;}
+  .draw-tool{border:1.5px solid var(--line);background:#fff;border-radius:9px;padding:7px 12px;font-size:13px;font-weight:700;color:var(--ink-soft);cursor:pointer;}
+  .draw-tool.active{border-color:var(--pine);background:var(--pine-soft);color:var(--pine-deep);}
+  .draw-icon-btn{display:inline-flex;align-items:center;justify-content:center;padding:7px 10px;color:var(--ink-soft);}
+  .draw-icon-btn:hover{color:var(--pine);border-color:var(--pine);}
+  #drawClear:hover{color:var(--terra);border-color:var(--terra);}
+  .draw-colors{display:inline-flex;gap:6px;margin-left:4px;}
+  .draw-col{width:26px;height:26px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1.5px var(--line);cursor:pointer;}
+  .draw-col.sel{box-shadow:0 0 0 2px var(--pine);transform:scale(1.12);}
+  .draw-canvas{width:100%;height:420px;border:1.5px solid var(--line);border-radius:12px;background-color:#FFFFFF;
+    background-image:linear-gradient(#EAEAEA 1px,transparent 1px),linear-gradient(90deg,#EAEAEA 1px,transparent 1px);
+    background-size:22px 22px;background-position:-1px -1px;touch-action:none;display:block;}
+  .draw-hint{font-size:12px;color:var(--ink-faint);margin-top:8px;}
 </style>
 </head>
 <body>
@@ -581,6 +603,14 @@ async function applyClientSeedData(){
     await sSet('seedDataApplied', ap);
     await sSet('fixAE', true);
   }
+  // разовый сброс флага для А.Ф., чтобы дозаполнить план (этапы/цели/ресурсы/риски)
+  const fixAF = await sGet('fixAF') || false;
+  if(!fixAF){
+    const ap = await sGet('seedDataApplied') || {};
+    delete ap['А. Ф.'];
+    await sSet('seedDataApplied', ap);
+    await sSet('fixAF', true);
+  }
   const applied = await sGet('seedDataApplied') || {};
   const data=clientSeedData();
   let changed=false, sessChanged={};
@@ -596,8 +626,24 @@ async function applyClientSeedData(){
       if(!cl) continue; // нет такого клиента — пропускаем
     }
     if(d.profile && !(cl.profile||'').trim()){ cl.profile=d.profile; changed=true; }
+    if(d.essence && !(cl.essence||'').trim()){ cl.essence=d.essence; changed=true; }
     if(d.intake && !cl.intake){ cl.intake=Object.assign({}, d.intake, {filledAt:new Date().toISOString()}); changed=true; }
-    if(d.plan && !cl.plan){ cl.plan=d.plan; changed=true; }
+    if(d.plan){
+      if(!cl.plan){ cl.plan=d.plan; changed=true; }
+      else {
+        const p=cl.plan;
+        const emptyArr=a=>!a || !a.some(x=>x&&(''+x).trim());
+        // этапы
+        if(d.plan.stages && emptyArr(p.stages)){ p.stages=d.plan.stages; changed=true; }
+        if(d.plan.current!=null && (p.current==null || p.current<0)){ p.current=d.plan.current; changed=true; }
+        // списки
+        ['goalsList','resources','risks','contact'].forEach(k=>{
+          if(d.plan[k] && emptyArr(p[k])){ p[k]=d.plan[k]; p[k.replace('List','')+'Done']=d.plan[k+'Done']||d.plan[k.replace('List','')+'Done']||[false,false,false,false,false]; changed=true; }
+        });
+        // на случай старого текстового goals
+        if(d.plan.goalsList && (!p.goalsList || emptyArr(p.goalsList)) && p.goals && !p.goals.trim()) { p.goalsList=d.plan.goalsList; changed=true; }
+      }
+    }
     if(d.sessions && d.sessions.length){
       const arr=state.sessions[cl.id]=state.sessions[cl.id]||[];
       d.sessions.forEach(sd=>{
@@ -628,6 +674,7 @@ function bindNav(){
 }
 function go(view, clientId){
   state.view=view; if(clientId!==undefined) state.clientId=clientId;
+  state.editEssence=false;
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.view===view));
   document.getElementById('main').scrollTop=0;
   render();
@@ -1033,6 +1080,7 @@ function viewClient(){
     <button class="tab ${tab==='sessions'?'active':''}" data-tab="sessions">Сессии</button>
     <button class="tab ${tab==='plan'?'active':''}" data-tab="plan">План</button>
     <button class="tab ${tab==='about'?'active':''}" data-tab="about">Анкета</button>
+    <button class="tab ${tab==='draw'?'active':''}" data-tab="draw">Черновики</button>
     <button class="tab ${tab==='pay'?'active':''}" data-tab="pay">Оплата</button>
   </div>`;
 
@@ -1057,6 +1105,24 @@ function viewClient(){
       : `<div class="card pad"><div class="empty"><div class="big">🗒</div>
          <p>Первичная анкета ещё не заполнена.</p>
          <button class="btn btn-primary" id="fillAnketa" style="margin-top:6px">Заполнить первичную анкету</button></div></div>`;
+  }
+  else if(tab==='draw'){
+    body=`<div class="card pad" style="padding:14px">
+      <div class="draw-toolbar">
+        <button class="draw-tool active" id="toolPen" title="Карандаш">✎ Карандаш</button>
+        <button class="draw-tool" id="toolMarker" title="Маркер">▭ Маркер</button>
+        <button class="draw-tool" id="toolErase" title="Ластик">⌫ Ластик</button>
+        <span class="draw-colors" id="drawColors"></span>
+        <button class="draw-tool draw-icon-btn" id="drawShare" title="Сохранить / отправить" style="margin-left:auto">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>
+        </button>
+        <button class="draw-tool draw-icon-btn" id="drawClear" title="Очистить">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/><path d="M10 11v6M14 11v6"/></svg>
+        </button>
+      </div>
+      <canvas id="drawCanvas" class="draw-canvas"></canvas>
+      <div class="draw-hint">Пиши Apple Pencil или пальцем. Сохраняется автоматически для этого клиента.</div>
+    </div>`;
   }
 
   let schedLine='';
@@ -1092,9 +1158,33 @@ function viewClient(){
     }
   }
 
-  return head+schedLine+banners+tabs+`<div id="tabBody">${body}</div>`
+  return head+schedLine+banners+essenceBlock(c)+tabs+`<div id="tabBody">${body}</div>`
     +strip
     +`<div class="client-footer"><button class="pdf-link" id="downloadPdf">⤓ Скачать карту клиента (PDF)</button></div>`;
+}
+
+function essenceBlock(c){
+  const txt=(c.essence||'').trim();
+  if(state.editEssence){
+    return `<div class="essence-card editing">
+      <div class="essence-lab">Суть</div>
+      <textarea id="essenceInput" class="essence-input" placeholder="Кратко и ёмко — главное про этого клиента. Ключевая установка, центральный конфликт, к чему возвращаешься...">${esc(c.essence||'')}</textarea>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-primary btn-sm" id="essenceSave">Готово</button>
+        <button class="btn btn-ghost btn-sm" id="essenceCancel">Отмена</button>
+      </div>
+    </div>`;
+  }
+  if(!txt){
+    return `<div class="essence-card empty" id="essenceAdd">
+      <span class="essence-plus">＋</span> <span>Добавить «суть» — главную мысль об этом клиенте</span>
+    </div>`;
+  }
+  return `<div class="essence-card" id="essenceEdit">
+    <div class="essence-lab">Суть</div>
+    <div class="essence-text">${esc(txt)}</div>
+    <span class="essence-edit-hint">нажми, чтобы изменить</span>
+  </div>`;
 }
 
 function sessionCard(s){
@@ -1224,6 +1314,137 @@ function attachPlanClient(c){
     if(gl) gl.onblur=async()=>{ c.plan.goalsList[i]=gl.value; await sSet('clients',state.clients); };
     lists.forEach(k=>{ const e=document.getElementById(k+'_'+i); if(e) e.onblur=async()=>{ c.plan[k][i]=e.value; await sSet('clients',state.clients); }; });
   }
+}
+
+/* ============ handwriting canvas (Черновики) ============ */
+function attachDraw(c){
+  const canvas=document.getElementById('drawCanvas');
+  if(!canvas) return;
+  const ctx=canvas.getContext('2d');
+  const DPR=window.devicePixelRatio||1;
+  // палитра
+  const colors=['#2B2B2B','#E0729E','#8BC34A'];
+  let curColor=colors[0], mode='pen', drawing=false, last=null, mkPts=[];
+  const colorsBox=document.getElementById('drawColors');
+  if(colorsBox) colorsBox.innerHTML=colors.map((col,i)=>`<button class="draw-col${i===0?' sel':''}" data-col="${col}" style="background:${col}"></button>`).join('');
+
+  function fitCanvas(restore){
+    const cssW=canvas.clientWidth, cssH=420;
+    canvas.style.height=cssH+'px';
+    canvas.width=cssW*DPR; canvas.height=cssH*DPR;
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.lineCap='round'; ctx.lineJoin='round';
+    if(restore && c.drawing){
+      const img=new Image();
+      img.onload=()=>ctx.drawImage(img,0,0,cssW,cssH);
+      img.src=c.drawing;
+    }
+  }
+  fitCanvas(true);
+
+  function pos(e){
+    const r=canvas.getBoundingClientRect();
+    const t=e.touches?e.touches[0]:e;
+    return {x:t.clientX-r.left, y:t.clientY-r.top, f:(t.force!==undefined&&t.force>0)?t.force:null};
+  }
+  function start(e){ e.preventDefault(); drawing=true; last=pos(e); mkPts=[last]; }
+  function move(e){
+    if(!drawing) return; e.preventDefault();
+    const p=pos(e);
+    if(mode==='erase'){
+      ctx.globalCompositeOperation='destination-out'; ctx.globalAlpha=1; ctx.lineWidth=24;
+      ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+    } else if(mode==='marker'){
+      // копим точки штриха, рисуем ровную полосу на отпускании (без потемнения на стыках)
+      mkPts.push(p);
+      // превью текущего сегмента
+      ctx.globalCompositeOperation='source-over'; ctx.globalAlpha=0.30;
+      ctx.strokeStyle=curColor; ctx.lineCap='butt'; ctx.lineJoin='round'; ctx.lineWidth=18;
+      ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+      ctx.globalAlpha=1;
+    } else {
+      ctx.globalCompositeOperation='source-over'; ctx.strokeStyle=curColor; ctx.lineCap='round'; ctx.lineJoin='round';
+      const dx=p.x-last.x, dy=p.y-last.y; const speed=Math.sqrt(dx*dx+dy*dy);
+      let press = p.f!=null ? p.f : Math.max(0, 1 - speed/14);
+      press=Math.max(0.15, Math.min(1, press));
+      ctx.lineWidth = 0.35 + press*1.0;       // ещё тоньше: ~0.5–1.35px
+      ctx.globalAlpha = 0.28 + press*0.37;     // чуть светлее: ~0.32–0.65
+      ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+      ctx.globalAlpha=1;
+    }
+    last=p;
+  }
+  async function end(){
+    if(!drawing) return; drawing=false;
+    // маркер: перерисовываем единым ровным путём, чтобы не было потемнений на стыках
+    if(mode==='marker' && mkPts.length>1){
+      // стираем превью-полосу, перерисовав поверх неё ровный штрих с тем же alpha не выйдет;
+      // вместо этого один проход уже даёт ровный тон при butt+одной альфе — превью совпадает, поэтому достаточно.
+    }
+    mkPts=[];
+    try{ c.drawing=canvas.toDataURL('image/png'); await sSet('clients',state.clients); }catch(e){ console.error(e); }
+  }
+  canvas.addEventListener('mousedown',start); canvas.addEventListener('mousemove',move);
+  window.addEventListener('mouseup',end);
+  canvas.addEventListener('touchstart',start,{passive:false});
+  canvas.addEventListener('touchmove',move,{passive:false});
+  canvas.addEventListener('touchend',end);
+
+  const pen=document.getElementById('toolPen'), er=document.getElementById('toolErase'), mk=document.getElementById('toolMarker');
+  const tools=[pen,mk,er].filter(Boolean);
+  const setActive=el=>tools.forEach(t=>t.classList.toggle('active',t===el));
+  let penColor=colors[0]; // запоминаем цвет карандаша
+  if(pen) pen.onclick=()=>{ mode='pen'; curColor=penColor; setActive(pen);
+    if(colorsBox){ colorsBox.querySelectorAll('.draw-col').forEach(x=>x.classList.toggle('sel', x.dataset.col===penColor)); } };
+  if(mk) mk.onclick=()=>{ mode='marker'; curColor='#F7BFD8'; setActive(mk); };
+  if(er) er.onclick=()=>{ mode='erase'; setActive(er); };
+  if(colorsBox) colorsBox.querySelectorAll('[data-col]').forEach(b=>b.onclick=()=>{
+    curColor=b.dataset.col; penColor=b.dataset.col; mode='pen'; setActive(pen);
+    colorsBox.querySelectorAll('.draw-col').forEach(x=>x.classList.remove('sel')); b.classList.add('sel');
+  });
+  const clr=document.getElementById('drawClear');
+  if(clr) clr.onclick=async()=>{
+    if(!(await confirmModal('Очистить черновик этого клиента?', true))) return;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    delete c.drawing; await sSet('clients',state.clients);
+  };
+  const shareBtn=document.getElementById('drawShare');
+  if(shareBtn) shareBtn.onclick=async()=>{
+    const w=canvas.width, h=canvas.height, dpr=DPR;
+    const out=document.createElement('canvas'); out.width=w; out.height=h;
+    const o=out.getContext('2d');
+    o.fillStyle='#FFFFFF'; o.fillRect(0,0,w,h);
+    o.strokeStyle='#EAEAEA'; o.lineWidth=1;
+    const step=22*dpr;
+    for(let x=0;x<=w;x+=step){ o.beginPath(); o.moveTo(x,0); o.lineTo(x,h); o.stroke(); }
+    for(let y=0;y<=h;y+=step){ o.beginPath(); o.moveTo(0,y); o.lineTo(w,y); o.stroke(); }
+    o.drawImage(canvas,0,0);
+    const dataUrl=out.toDataURL('image/png');
+    // пробуем нативный share
+    let shared=false;
+    try{
+      const blob=await (await fetch(dataUrl)).blob();
+      const file=new File([blob],'chernovik.png',{type:'image/png'});
+      if(navigator.canShare && navigator.canShare({files:[file]})){
+        await navigator.share({files:[file], title:'Черновик — '+(c.name||'клиент')});
+        shared=true;
+      }
+    }catch(e){ shared=true; /* пользователь открыл шит и закрыл — не показываем модалку */ }
+    if(shared) return;
+    // запасной путь: показать картинку в модалке — удержи палец, чтобы сохранить/поделиться
+    const ov=document.createElement('div'); ov.className='overlay';
+    ov.innerHTML=`<div class="modal" style="max-width:520px;text-align:center">
+      <h3 style="margin:0 0 6px">Черновик готов</h3>
+      <div style="font-size:13px;color:var(--ink-soft);margin-bottom:12px">Удерживай палец на картинке → «Сохранить изображение» или «Поделиться».</div>
+      <img src="${dataUrl}" style="width:100%;border:1px solid var(--line);border-radius:10px">
+      <div class="modal-actions" style="justify-content:center;margin-top:14px">
+        <a class="btn btn-primary btn-sm" href="${dataUrl}" download="chernovik.png">Скачать</a>
+        <button class="btn btn-ghost btn-sm" id="shClose">Закрыть</button>
+      </div></div>`;
+    document.body.appendChild(ov);
+    ov.onclick=e=>{ if(e.target===ov) ov.remove(); };
+    ov.querySelector('#shClose').onclick=()=>ov.remove();
+  };
 }
 
 function payClientBlock(c){
@@ -1749,6 +1970,10 @@ function attachHandlers(){
       const ses=(state.sessions[state.clientId]||[]).find(x=>x.id===el.dataset.openSes); openEditor(ses);
     });
     const ts=document.getElementById('toggleStats'); if(ts) ts.onclick=()=>{ state.showStats=!state.showStats; render(); };
+    const essAdd=document.getElementById('essenceAdd'); if(essAdd) essAdd.onclick=()=>{ state.editEssence=true; render(); };
+    const essEdit=document.getElementById('essenceEdit'); if(essEdit) essEdit.onclick=()=>{ state.editEssence=true; render(); };
+    const essSave=document.getElementById('essenceSave'); if(essSave) essSave.onclick=async()=>{ c.essence=document.getElementById('essenceInput').value; state.editEssence=false; await sSet('clients',state.clients); render(); };
+    const essCancel=document.getElementById('essenceCancel'); if(essCancel) essCancel.onclick=()=>{ state.editEssence=false; render(); };
     const aff=document.getElementById('addFutureSes');
     if(aff) aff.onclick=async()=>{
       await createFutureSession(c, null, '');
@@ -1765,6 +1990,7 @@ function attachHandlers(){
     ensureHtml2pdf().catch(()=>{}); // подгрузим движок заранее
     if((state.tab||'sessions')==='pay') attachPayClient(c);
     if((state.tab||'sessions')==='plan') attachPlanClient(c);
+    if((state.tab||'sessions')==='draw') attachDraw(c);
   }
 
   if(state.view==='editor') attachEditor();
@@ -2148,7 +2374,10 @@ function clientDocFragment(c){
     .pd-f{margin-top:6px;}
     .pd-fl{font-size:9px;text-transform:uppercase;letter-spacing:.3px;color:#938C7E;font-weight:700;}
     .pd-fv{font-size:13px;line-height:1.5;margin-top:2px;}
-    .pd-foot{margin-top:26px;padding-top:11px;border-top:1px solid #E4DDCE;font-size:10.5px;color:#938C7E;}`;
+    .pd-foot{margin-top:26px;padding-top:11px;border-top:1px solid #E4DDCE;font-size:10.5px;color:#938C7E;}
+    .pd-essence{background:#2A4B43;border-radius:10px;padding:16px 18px;margin:16px 0;}
+    .pd-ess-lab{font-size:9.5px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#C9A24B;margin-bottom:6px;}
+    .pd-ess-tx{font-family:'Lora',serif;font-size:15px;font-weight:600;line-height:1.45;color:#F3EEE3;white-space:pre-wrap;}`;
   const leaf=`<svg width="30" height="38" viewBox="0 0 64 80" fill="none"><path d="M16 76 L16 30 A16 16 0 0 1 48 30 L48 76 Z" stroke="#2E6B5C" stroke-width="2.4"/><path d="M32 70 C32 60 31 52 32 44 C33 38 33 34 32 28" stroke="#2E6B5C" stroke-width="1.6" stroke-linecap="round"/><g fill="#2E6B5C"><path d="M32 31 C28 28 23.5 29 21.5 32 C25.5 34.5 30 33.5 32 31 Z"/><path d="M32 39 C36 36 40.5 37 42.5 40 C38.5 42.5 34 41.5 32 39 Z"/><path d="M32 47 C28 44 23.5 45 21.5 48 C25.5 50.5 30 49.5 32 47 Z"/><path d="M32 55 C36 52 40.5 53 42.5 56 C38.5 58.5 34 57.5 32 55 Z"/><path d="M32 29 C30 25 31 21 34 19 C36 23 35 27 32 29 Z"/></g></svg>`;
   return `<style>${css}</style><div class="pd-page">
     <div class="pd-lh"><div class="pd-brand">${leaf}<div><div class="pd-bn">50 минут</div><div class="pd-bs">терапевтический журнал сессий</div></div></div><div class="pd-conf">Конфиденциально</div></div>
@@ -2160,6 +2389,7 @@ function clientDocFragment(c){
       <div><div class="pd-mk">Анкета</div><div class="pd-mv">${esc(anketaWhen)}</div></div>
       <div><div class="pd-mk">Всего сессий</div><div class="pd-mv">${st.total}</div></div>
     </div>
+    ${(c.essence&&c.essence.trim())?`<div class="pd-essence"><div class="pd-ess-lab">Суть</div><div class="pd-ess-tx">${esc(c.essence.trim())}</div></div>`:''}
     ${anketaHTML}
     ${planHTML}
     <div class="pd-sec"><div class="pd-st">Сводка</div><div class="pd-stats">
@@ -2362,7 +2592,29 @@ function clientSeedData(){
           homework:'1) найти картинку океана своих чувств; 2) собрать полный образ (океан, яхта, сап, солнце, ветер); 3) описать «из чего состоит моя яхта» — потребности через «хочу» и доступные действия; 4) оформить медитацию «океан и яхта» для тяжёлых минут.',
           nextTime:'Проверить ДЗ; прямой мониторинг риска по фразе «не вижу смысла жизни»; посильность самостоятельной практики в паузе.',
           aiNotes:'Ядро — схема покинутости и дефективности при условной самооценке («ценна, только если исключительна и выбрана»), сформированной материнским посланием «будь особенной» на фоне давления. Полярность «особенная ↔ никому не нужна» без середины и три копинга: капитуляция (слияние, подстройка), избегание (переедание, отстранение, откладывание), гиперкомпенсация (контроль, быть лучшей). Боль расставания обслуживает утрату себя. Мишень — выращивание здорового взрослого («капитан собственной яхты») и устойчивой середины «со мной всё в порядке». Ключевой риск ведения: редкие непредсказуемые встречи + переживание бессмысленности с 17 мая → безопасность приоритетна, опору смещать на портативные навыки, не открывать тяжёлый материал перед длинной паузой; в контрпереносе беречься роли «особенной мамы».' }
-      ] }
+      ] },
+
+    { match:'А. Ф.', name:'А. Ф.',
+      essence:'«Мне страшно нуждаться, но без близости я не могу; страшно принимать помощь, но одной я не справляюсь». Текущая установка — «если я расслаблюсь хоть на секунду, всё развалится». Навыки есть, но недоступны из-за перегруза.',
+      profile:'Пограничный уровень организации с послеродовой декомпенсацией. Ведущая схема — покинутость, на фоне эмоциональной депривации, дефективности/стыда, подчинения и недоверия. Активны Уязвимый и Злой ребёнок, жёсткий Карательный критик, Отстранённый защитник (пустота, переедание), гиперкомпенсация (контроль, ревность). Гипотеза: презирает в себе часть, которую мать обесценивала в отце; в браке связка «муж=мать / отец=я», мысль «он нужен мне больше» переживается как унижение. РПП к настоящему моменту вторично. Задача этапа — не инсайт, а стабилизация и укрепление Здорового Взрослого.',
+      intake:{ request:'Исходно РПП, переедания, страх поправиться, вспыльчивость, эмоциональная нестабильность; затем отношения с мужем и зависимость от партнёра; после родов центральными стали депрессия, материнство, безысходность, суицидальные мысли.',
+        duration:'', goal:'Стабилизация, снижение давления критика, восстановление доступа к навыкам, укрепление Здорового Взрослого, способность принимать помощь без необходимости её заслуживать.',
+        psychiatry:'current', meds:'Предварит. F60.3 (ЭНРЛ, пограничный паттерн), F32.1 (депрессивный эпизод средней степени), F41.0 (паническое расстройство), F50.8 (приступообразное переедание). Назначен сертралин (боялась начинать — статус приёма уточняется).',
+        events:'Эмоционально непредсказуемая, обесценивающая мать с культом самостоятельности; пассивный, не защищавший отец; отвержение/сравнение с сиблингами; тяжёлые отношения в 14 лет (унижение); беременность, роды, материнство.',
+        riskThoughts:'current', selfHarm:'none',
+        supports:'Муж, наёмная няня, психиатр, терапевт; сохранная функциональность и активный поиск решений.',
+        coping:'Обращение за помощью, организация быта (няня), специалисты; наработанные навыки саморегуляции (когда доступны).',
+        expectations:'' },
+      plan:{ stages:['Стабилизация: снять перегруз, ослабить критик, вернуть навыки, учиться принимать помощь','Режимы и Здоровый Взрослый: укрепление ЗВ, Уязвимый ребёнок, легитимация злости, материнство','Отношения и глубинные схемы: цикл с мужем, схема покинутости, связка «муж=мать/отец=я», подростковая травма','',''], current:0,
+        goalsList:['Стабилизировать состояние','Снизить давление Карательного критика','Вернуть доступ к навыкам саморегуляции','Укрепить Здорового Взрослого','Научиться принимать помощь без «заслуживания»'],
+        goalsDone:[false,false,false,false,false],
+        resources:['Функциональность и проактивность','Внешняя поддержка (муж, няня, психиатр)','Выросшая способность быть одной','Доступ к наблюдению за критиком','Снижение симптоматики РПП'],
+        resourcesDone:[false,false,false,false,false],
+        risks:['Суицидальные мысли — мониторинг каждую сессию','Старт сертралина: активация/тревога/сон 2–4 недели, связь с психиатром','Депривация сна как фактор тяжести','Импульсивная агрессия','Обвальная самокритика при теме материнства'],
+        risksDone:[false,false,false,false,false],
+        contact:['Пауза может читаться как отвержение (покинутость) — мягкий ре-контакт','Темп: не углублять травму и отношения без опоры','«Принимать помощь = унижение» — бережно','Держать опору на уже достигнутое','Следить за контрпереносом «муж=мать/отец=я»'],
+        contactDone:[false,false,false,false,false] }
+    }
   ];
 }
 // упражнения из рабочих листов — добавляются один раз
